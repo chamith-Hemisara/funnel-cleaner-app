@@ -114,20 +114,19 @@ if uploaded_file:
     )
     df.drop(columns=['Lead Status.1'], inplace=True)
 
-    # ---- FIXED LOGIC: Fill missing Sales BDO row-by-row based on BDO task ----
-    def fill_sales_bdo_per_task(group):
-        for idx, row in group.iterrows():
-            if pd.isna(row['Sales BDO']):
-                task_name = str(row['Task Name'])
-                user = row['User']
-                if pd.notna(user) and task_name.startswith('Contact Customer - DS BDO'):
-                    if pd.api.types.is_categorical_dtype(group['Sales BDO']):
-                        if user not in group['Sales BDO'].cat.categories:
-                            group['Sales BDO'] = group['Sales BDO'].cat.add_categories([user])
-                    group.at[idx, 'Sales BDO'] = user
+    # ---- NEW LOGIC: Set Sales BDO to latest User from DS BDO task ----
+    def fill_bdo_from_latest_contact(group):
+        bdo_steps = group[group['Task Name'].str.startswith('Contact Customer - DS BDO') & group['User'].notnull()]
+        if not bdo_steps.empty:
+            latest_user = bdo_steps.sort_values('Task Created Date').iloc[-1]['User']
+            if 'Sales BDO' in group.columns:
+                if pd.api.types.is_categorical_dtype(group['Sales BDO']):
+                    if latest_user not in group['Sales BDO'].cat.categories:
+                        group['Sales BDO'] = group['Sales BDO'].cat.add_categories([latest_user])
+                group['Sales BDO'] = latest_user
         return group
 
-    df = df.groupby('REF No', group_keys=False).apply(fill_sales_bdo_per_task)
+    df = df.groupby('REF No', group_keys=False).apply(fill_bdo_from_latest_contact)
 
     df.reset_index(drop=True, inplace=True)
 
