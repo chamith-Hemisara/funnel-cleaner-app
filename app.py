@@ -5,14 +5,13 @@ import io
 st.set_page_config(page_title="Funnel Cleaner App", layout="wide")
 st.title("\U0001F4C2 Funnel Data Cleaner")
 
+# Upload CSV
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
     # ---- Data Cleaning Begins ----
-    df.columns = df.columns.str.strip()  # Strip spaces from column names
-
     date_cols = [
         'Inquiry Created Date', 'Site Visit Date Time', 'Latest Quotation Date',
         'Task Created Date', 'Completed Date', 'Claimed Date'
@@ -48,8 +47,10 @@ if uploaded_file:
     # Adjust timezone
     df['Completed Date'] = pd.to_datetime(df['Completed Date'], errors='coerce') + pd.Timedelta(hours=5.5)
 
+    # Step 1: Sort
     df.sort_values(by=['REF No', 'Task Created Date'], inplace=True)
 
+    # Step 2: Keep only first 'Site Visit'
     def filter_site_visits(group):
         site_visits = group[group['Task Name'] == 'Site Visit']
         if not site_visits.empty:
@@ -59,6 +60,7 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(filter_site_visits)
 
+    # Step 2.1: Keep latest 'Waiting Customer Feedback*'
     def keep_latest_waiting_feedback(group):
         feedback_tasks = group[group['Task Name'].str.startswith('Waiting Customer Feedback')]
         if not feedback_tasks.empty:
@@ -68,6 +70,7 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(keep_latest_waiting_feedback)
 
+    # Step 3: Rename repeated tasks
     def rename_repeated_tasks(group):
         task_counts = {}
         new_task_names = []
@@ -80,6 +83,7 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(rename_repeated_tasks)
 
+    # Step 4: Escalation Status
     def get_escalation_status(row):
         task = row['Task Name']
         completed = row['Completed Date']
@@ -94,6 +98,7 @@ if uploaded_file:
 
     df['Escalation Status'] = df.apply(get_escalation_status, axis=1)
 
+    # Step 4.1: Final Stage
     def assign_final_stage(group):
         latest_task = group.loc[group['Task Created Date'].idxmax(), 'Task Name']
         group['Final Stage'] = latest_task
@@ -101,6 +106,7 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(assign_final_stage)
 
+    # Step 5: Product
     df['Product'] = (
         df['Brand'].astype(str) + ' - ' +
         df['Phase'].astype(str) + ' ' +
@@ -108,43 +114,26 @@ if uploaded_file:
         df['Latest Quoted Inverter Capacity (kW)'].astype(str) + ' kW'
     )
 
+    # Step 6: Lead Source
     df['Call center or Self'] = df['Lead Status.1'].apply(
         lambda x: 'CRM Call Center' if str(x).strip() == 'CRM Call Center' else 'Self Lead'
     )
     df.drop(columns=['Lead Status.1'], inplace=True)
 
-    # ---- NEW LOGIC: Fill missing Sales BDO ----
-    def fill_missing_bdo(group):
-        if 'Sales BDO' not in group.columns or 'User' not in group.columns:
-            return group
+    # Step 7: Assign BDO (user from Contact Customer - DS BDO*)
+    df['BDO'] = df.apply(
+        lambda row: row['User'] if str(row['Task Name']).startswith('Contact Customer - DS BDO') else None,
+        axis=1
+    )
 
-        if group['Sales BDO'].isnull().any():
-            site_visit_user = group.loc[group['Task Name'].str.startswith('Site Visit') & group['User'].notnull(), 'User']
-            contact_bdo_user = group.loc[group['Task Name'].str.startswith('Contact Customer - DS BDO') & group['User'].notnull(), 'User']
-
-            fill_value = None
-            if not site_visit_user.empty:
-                fill_value = site_visit_user.iloc[0]
-            elif not contact_bdo_user.empty:
-                fill_value = contact_bdo_user.iloc[0]
-
-            if fill_value:
-                if pd.api.types.is_categorical_dtype(group['Sales BDO']):
-                    if fill_value not in group['Sales BDO'].cat.categories:
-                        group['Sales BDO'] = group['Sales BDO'].cat.add_categories([fill_value])
-                group['Sales BDO'] = group['Sales BDO'].fillna(fill_value)
-
-        return group
-
-    df = df.groupby('REF No', group_keys=False).apply(fill_missing_bdo)
-
+    # Step 8: Reset index
     df.reset_index(drop=True, inplace=True)
 
-    # ---- Display preview ----
+    # Step 9: Preview cleaned data
     st.subheader("Preview of Cleaned Data")
     st.dataframe(df.head(10))
 
-    # ---- Download button ----
+    # Step 10: Download Excel
     towrite = io.BytesIO()
     df.to_excel(towrite, index=False, engine='openpyxl')
     towrite.seek(0)
