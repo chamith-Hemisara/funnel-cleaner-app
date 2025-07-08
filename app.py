@@ -3,7 +3,7 @@ import pandas as pd
 import io
 
 st.set_page_config(page_title="Funnel Cleaner App", layout="wide")
-st.title("\U0001F4C2 Funnel Data Cleaner")
+st.title("📂 Funnel Data Cleaner")
 
 # Upload CSV
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
@@ -47,10 +47,10 @@ if uploaded_file:
     # Adjust timezone
     df['Completed Date'] = pd.to_datetime(df['Completed Date'], errors='coerce') + pd.Timedelta(hours=5.5)
 
-    # Step 1: Sort
+    # Sort before group operations
     df.sort_values(by=['REF No', 'Task Created Date'], inplace=True)
 
-    # Step 2: Keep only first 'Site Visit'
+    # Keep only first Site Visit per REF No
     def filter_site_visits(group):
         site_visits = group[group['Task Name'] == 'Site Visit']
         if not site_visits.empty:
@@ -60,7 +60,7 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(filter_site_visits)
 
-    # Step 2.1: Keep latest 'Waiting Customer Feedback*'
+    # Keep only latest Waiting Customer Feedback*
     def keep_latest_waiting_feedback(group):
         feedback_tasks = group[group['Task Name'].str.startswith('Waiting Customer Feedback')]
         if not feedback_tasks.empty:
@@ -70,7 +70,7 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(keep_latest_waiting_feedback)
 
-    # Step 3: Rename repeated tasks
+    # Rename repeated Task Names
     def rename_repeated_tasks(group):
         task_counts = {}
         new_task_names = []
@@ -83,7 +83,7 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(rename_repeated_tasks)
 
-    # Step 4: Escalation Status
+    # Escalation Status logic
     def get_escalation_status(row):
         task = row['Task Name']
         completed = row['Completed Date']
@@ -98,7 +98,7 @@ if uploaded_file:
 
     df['Escalation Status'] = df.apply(get_escalation_status, axis=1)
 
-    # Step 4.1: Final Stage
+    # Final Stage: latest task for each REF No
     def assign_final_stage(group):
         latest_task = group.loc[group['Task Created Date'].idxmax(), 'Task Name']
         group['Final Stage'] = latest_task
@@ -106,7 +106,7 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(assign_final_stage)
 
-    # Step 5: Product
+    # Create Product column
     df['Product'] = (
         df['Brand'].astype(str) + ' - ' +
         df['Phase'].astype(str) + ' ' +
@@ -114,32 +114,36 @@ if uploaded_file:
         df['Latest Quoted Inverter Capacity (kW)'].astype(str) + ' kW'
     )
 
-    # Step 6: Lead Source
+    # Call center or Self Lead
     df['Call center or Self'] = df['Lead Status.1'].apply(
         lambda x: 'CRM Call Center' if str(x).strip() == 'CRM Call Center' else 'Self Lead'
     )
     df.drop(columns=['Lead Status.1'], inplace=True)
 
-    # Step 7: Assign BDO (user from Contact Customer - DS BDO*)
-    df['BDO'] = df.apply(
-        lambda row: row['User'] if str(row['Task Name']).startswith('Contact Customer - DS BDO') else None,
-        axis=1
-    )
+    # ✅ Update Sales BDO using User of Contact Customer - DS BDO*
+    def assign_sales_bdo(group):
+        bdo_tasks = group[group['Task Name'].str.startswith('Contact Customer - DS BDO')]
+        if not bdo_tasks.empty:
+            latest_bdo_user = bdo_tasks.sort_values('Task Created Date').iloc[-1]['User']
+            group['Sales BDO'] = latest_bdo_user
+        return group
 
-    # Step 8: Reset index
+    df = df.groupby('REF No', group_keys=False).apply(assign_sales_bdo)
+
+    # Reset index
     df.reset_index(drop=True, inplace=True)
 
-    # Step 9: Preview cleaned data
+    # Preview cleaned data
     st.subheader("Preview of Cleaned Data")
     st.dataframe(df.head(10))
 
-    # Step 10: Download Excel
+    # Download cleaned Excel file
     towrite = io.BytesIO()
     df.to_excel(towrite, index=False, engine='openpyxl')
     towrite.seek(0)
 
     st.download_button(
-        label="\U0001F4BE Download Cleaned Excel",
+        label="💾 Download Cleaned Excel",
         data=towrite,
         file_name="Funnel_Cleaned.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
