@@ -5,13 +5,14 @@ import io
 st.set_page_config(page_title="Funnel Cleaner App", layout="wide")
 st.title("\U0001F4C2 Funnel Data Cleaner")
 
-# Upload CSV
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
 
     # ---- Data Cleaning Begins ----
+    df.columns = df.columns.str.strip()  # Strip spaces from column names
+
     date_cols = [
         'Inquiry Created Date', 'Site Visit Date Time', 'Latest Quotation Date',
         'Task Created Date', 'Completed Date', 'Claimed Date'
@@ -112,13 +113,38 @@ if uploaded_file:
     )
     df.drop(columns=['Lead Status.1'], inplace=True)
 
+    # ---- NEW LOGIC: Fill missing Sales BDO ----
+    def fill_missing_bdo(group):
+        if 'Sales BDO' not in group.columns or 'User' not in group.columns:
+            return group
+
+        if group['Sales BDO'].isnull().any():
+            site_visit_user = group.loc[group['Task Name'].str.startswith('Site Visit') & group['User'].notnull(), 'User']
+            contact_bdo_user = group.loc[group['Task Name'].str.startswith('Contact Customer - DS BDO') & group['User'].notnull(), 'User']
+
+            fill_value = None
+            if not site_visit_user.empty:
+                fill_value = site_visit_user.iloc[0]
+            elif not contact_bdo_user.empty:
+                fill_value = contact_bdo_user.iloc[0]
+
+            if fill_value:
+                if pd.api.types.is_categorical_dtype(group['Sales BDO']):
+                    if fill_value not in group['Sales BDO'].cat.categories:
+                        group['Sales BDO'] = group['Sales BDO'].cat.add_categories([fill_value])
+                group['Sales BDO'] = group['Sales BDO'].fillna(fill_value)
+
+        return group
+
+    df = df.groupby('REF No', group_keys=False).apply(fill_missing_bdo)
+
     df.reset_index(drop=True, inplace=True)
 
-    # Display preview
+    # ---- Display preview ----
     st.subheader("Preview of Cleaned Data")
     st.dataframe(df.head(10))
 
-    # Download button
+    # ---- Download button ----
     towrite = io.BytesIO()
     df.to_excel(towrite, index=False, engine='openpyxl')
     towrite.seek(0)
