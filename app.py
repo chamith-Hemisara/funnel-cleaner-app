@@ -109,8 +109,7 @@ if uploaded_file:
         df.drop(columns=['Lead Status.1'], inplace=True)
 
     # Assign Sales BDO
-    def assign_sales_bdo(group):
-        bdo_tasks = group[group['Task Name'].str.startswith('Contact Customer - DS BDO', na=False) & group['User'].notna()]
+    def assign_sales_bdo(group):p[group['Task Name'].str.startswith('Contact Customer - DS BDO', na=False) & group['User'].notna()]
         user = None
         if not bdo_tasks.empty:
             user = bdo_tasks.sort_values('Task Created Date').iloc[-1]['User']
