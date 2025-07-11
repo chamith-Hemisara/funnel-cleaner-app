@@ -8,92 +8,148 @@ st.title("📂 Funnel Data Cleaner")
 # Upload CSV
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
-if uploaded_file is not None:
+if uploaded_file:
     df = pd.read_csv(uploaded_file)
+    df.columns = df.columns.str.strip()
 
-    # Standardize column names
-    df.columns = [col.strip() for col in df.columns]
+    # Convert types
+    date_cols = ['Inquiry Created Date', 'Site Visit Date Time', 'Latest Quotation Date', 'Task Created Date', 'Completed Date', 'Claimed Date']
+    for col in date_cols:
+        if col in df.columns:
+            df[col] = pd.to_datetime(df[col], errors='coerce')
 
-    # Required columns
-    required_cols = ['REF No', 'Task Name', 'User', 'Task Created Date', 'RSM', 'BDM']
-    for col in required_cols:
-        if col not in df.columns:
-            st.error(f"Missing required column: {col}")
-            st.stop()
+    float_cols = ['Advance Amount', 'Additional Discount', 'Latest Quoted Inverter Capacity (kW)', 'Latest Final Investment', 'DC Capacity']
+    for col in float_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # Ensure datetime format
-    df['Task Created Date'] = pd.to_datetime(df['Task Created Date'], errors='coerce')
+    int_cols = ['No of Panels', 'No of Additional Panels']
+    for col in int_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce').astype('Int64')
 
-    # Helper: clean strings
-    def clean(val):
-        return str(val).strip().lower() if pd.notna(val) else ""
+    bool_cols = ['Customer Contacted?', 'Escalated', 'Lead from Call Center?', 'Claimable']
+    for col in bool_cols:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.lower().map({'yes': True, 'no': False, 'true': True, 'false': False})
 
-    # Reset Sales BDO
-    df['Sales BDO'] = pd.NA
+    category_cols = ['Sales BDO', 'RSM', 'BDM', 'Inquiry Source Category (Source)', 'Inquiry Category (Source Type)',
+                     'City (CC)', 'District (CC)', 'Province (CC)', 'System Type', 'Phase', 'Type', 'Brand',
+                     'Lead Status', 'Lead Status.1', 'User', 'Assignee', 'User Group']
+    for col in category_cols:
+        if col in df.columns:
+            df[col] = df[col].astype('category')
 
-    # Step 1: Assign Sales BDO
-    def assign_sales_bdo(group):
-        rsm = clean(group['RSM'].iloc[0])
-        bdm = clean(group['BDM'].iloc[0])
-        bdo = None
+    if 'Completed Date' in df.columns:
+        df['Completed Date'] = pd.to_datetime(df['Completed Date'], errors='coerce') + pd.Timedelta(hours=5.5)
 
-        # Check Contact Customer - DS BDO
-        cc_rows = group[
-            group['Task Name'].str.startswith("Contact Customer - DS BDO", na=False) &
-            group['User'].notna()
-        ].sort_values('Task Created Date')
+    df.sort_values(by=['REF No', 'Task Created Date'], inplace=True)
 
-        for user in cc_rows['User']:
-            if clean(user) not in {rsm, bdm}:
-                bdo = user
-                break
-
-        # If still not found, try Site Visit
-        if not bdo:
-            site_rows = group[
-                group['Task Name'].str.lower() == 'site visit'
-            ].sort_values('Task Created Date')
-
-            for user in site_rows['User']:
-                if clean(user) not in {rsm, bdm}:
-                    bdo = user
-                    break
-
-        group['Sales BDO'] = bdo if bdo else pd.NA
+    # Keep only first Site Visit
+    def filter_site_visits(group):
+        site_visits = group[group['Task Name'] == 'Site Visit']
+        if not site_visits.empty:
+            keep_idx = site_visits.head(1).index
+            return group[~((group['Task Name'] == 'Site Visit') & (~group.index.isin(keep_idx)))]
         return group
+    df = df.groupby('REF No', group_keys=False).apply(filter_site_visits)
 
+    # Keep only latest Waiting Customer Feedback*
+    def keep_latest_waiting_feedback(group):
+        feedback_tasks = group[group['Task Name'].str.startswith('Waiting Customer Feedback', na=False)]
+        if not feedback_tasks.empty:
+            latest_idx = feedback_tasks['Task Created Date'].idxmax()
+            return group[~((group['Task Name'].str.startswith('Waiting Customer Feedback', na=False)) & (group.index != latest_idx))]
+        return group
+    df = df.groupby('REF No', group_keys=False).apply(keep_latest_waiting_feedback)
+
+    # Rename repeated tasks
+    def rename_repeated_tasks(group):
+        task_counts = {}
+        new_task_names = []
+        for task in group['Task Name']:
+            task_counts[task] = task_counts.get(task, 0) + 1
+            suffix = f" {task_counts[task]}" if task_counts[task] > 1 else ""
+            new_task_names.append(f"{task}{suffix}")
+        group['Task Name'] = new_task_names
+        return group
+    df = df.groupby('REF No', group_keys=False).apply(rename_repeated_tasks)
+
+    # Escalation Status
+    def get_escalation_status(row):
+        if pd.isna(row['Completed Date']):
+            if row['Task Name'].startswith('Contact Customer - DS BDO'):
+                return 'BDO Escalation'
+            elif row['Task Name'].startswith('Contact Customer - DS RSM'):
+                return 'RSM Escalation'
+            elif row['Task Name'].startswith('Contact Customer - DS BDM'):
+                return 'BDM Escalation'
+        return 'Not Escalated'
+    df['Escalation Status'] = df.apply(get_escalation_status, axis=1)
+
+    # Final Stage
+    def assign_final_stage(group):
+        latest_task = group.loc[group['Task Created Date'].idxmax(), 'Task Name']
+        group['Final Stage'] = latest_task
+        return group
+    df = df.groupby('REF No', group_keys=False).apply(assign_final_stage)
+
+    # Product
+    def safe_str(val):
+        return str(val) if pd.notna(val) else ''
+    df['Product'] = (
+        df.apply(lambda r: f"{safe_str(r.get('Brand',''))} - {safe_str(r.get('Phase',''))} {safe_str(r.get('Type',''))} Inverters - {safe_str(r.get('Latest Quoted Inverter Capacity (kW)',''))} kW", axis=1)
+    )
+
+    # Call center or Self
+    if 'Lead Status.1' in df.columns:
+        df['Call center or Self'] = df['Lead Status.1'].apply(
+            lambda x: 'CRM Call Center' if str(x).strip() == 'CRM Call Center' else 'Self Lead'
+        )
+        df.drop(columns=['Lead Status.1'], inplace=True)
+
+    # Assign Sales BDO
+    def assign_sales_bdo(group):
+        bdo_tasks = group[group['Task Name'].str.startswith('Contact Customer - DS BDO', na=False) & group['User'].notna()]
+        user = None
+        if not bdo_tasks.empty:
+            user = bdo_tasks.sort_values('Task Created Date').iloc[-1]['User']
+        else:
+            sv = group[group['Task Name'] == 'Site Visit']
+            if not sv.empty:
+                candidate = sv.iloc[0]['User']
+                rsm = group['RSM'].iloc[0] if 'RSM' in group.columns else None
+                bdm = group['BDM'].iloc[0] if 'BDM' in group.columns else None
+                if candidate not in {rsm, bdm}:
+                    user = candidate
+        if user:
+            if pd.api.types.is_categorical_dtype(group['Sales BDO']):
+                if user not in group['Sales BDO'].cat.categories:
+                    group['Sales BDO'] = group['Sales BDO'].cat.add_categories([user])
+            group['Sales BDO'] = user
+        return group
     df = df.groupby('REF No', group_keys=False).apply(assign_sales_bdo)
 
-    # Step 2: Final cleanup — remove if Sales BDO == RSM or BDM
-    def final_clean(row):
-        bdo = clean(row['Sales BDO'])
-        rsm = clean(row['RSM'])
-        bdm = clean(row['BDM'])
-
-        if bdo and (bdo == rsm or bdo == bdm):
+    # Final fix: Remove RSM or BDM names from Sales BDO
+    def remove_if_bdo_is_rsm_or_bdm(row):
+        if row.get('Sales BDO') in [row.get('RSM'), row.get('BDM')]:
             return pd.NA
-        return row['Sales BDO']
+        return row.get('Sales BDO')
+    df['Sales BDO'] = df.apply(remove_if_bdo_is_rsm_or_bdm, axis=1)
 
-    df['Sales BDO'] = df.apply(final_clean, axis=1)
+    df.reset_index(drop=True, inplace=True)
 
-    # Optional: Add flag for visibility
-    df['BDO Valid?'] = df['Sales BDO'].apply(
-        lambda x: '✅ OK' if pd.notna(x) else '❌ Removed or Empty'
-    )
+    # Preview & Download
+    st.subheader("Preview of Cleaned Data (first 10 rows)")
+    st.dataframe(df.head(10))
 
-    # Show final data
-    st.subheader("✅ Final Cleaned Data")
-    st.dataframe(df)
+    towrite = io.BytesIO()
+    df.to_excel(towrite, index=False, engine='openpyxl')
+    towrite.seek(0)
 
-    # Download cleaned CSV
-    csv = df.to_csv(index=False).encode('utf-8')
     st.download_button(
-        "📥 Download Cleaned CSV",
-        csv,
-        file_name="final_cleaned_funnel_data.csv",
-        mime="text/csv"
+        label="💾 Download Cleaned Excel",
+        data=towrite,
+        file_name="Funnel_Cleaned.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-    # Show invalids (optional)
-    st.subheader("❌ Rows with Empty or Removed BDO")
-    st.dataframe(df[df['BDO Valid?'] == '❌ Removed or Empty'][['REF No', 'RSM', 'BDM', 'Sales BDO']])
