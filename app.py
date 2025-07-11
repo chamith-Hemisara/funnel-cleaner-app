@@ -130,19 +130,12 @@ if uploaded_file:
         return group
     df = df.groupby('REF No', group_keys=False).apply(assign_sales_bdo)
 
-    # ✅ Final fix: Remove RSM or BDM names from Sales BDO
-    def clean_sales_bdo(row):
-        bdo = str(row.get('Sales BDO', '')).strip()
-        rsm = str(row.get('RSM', '')).strip()
-        bdm = str(row.get('BDM', '')).strip()
-        if bdo in [rsm, bdm]:
+    # Final fix: Remove RSM or BDM names from Sales BDO
+    def remove_if_bdo_is_rsm_or_bdm(row):
+        if row.get('Sales BDO') in [row.get('RSM'), row.get('BDM')]:
             return pd.NA
-        return bdo
-    df['Sales BDO'] = df.apply(clean_sales_bdo, axis=1)
-
-    # Convert back to category if needed
-    if 'Sales BDO' in df.columns and df['Sales BDO'].dtype != 'category':
-        df['Sales BDO'] = df['Sales BDO'].astype('category')
+        return row.get('Sales BDO')
+    df['Sales BDO'] = df.apply(remove_if_bdo_is_rsm_or_bdm, axis=1)
 
     df.reset_index(drop=True, inplace=True)
 
