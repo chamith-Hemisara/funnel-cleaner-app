@@ -3,7 +3,7 @@ import pandas as pd
 import io
 
 st.set_page_config(page_title="Funnel Cleaner App", layout="wide")
-st.title("📂 Funnel Data Cleaner")
+st.title("📂 Funnel Data Cleane
 
 # Upload CSV
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
