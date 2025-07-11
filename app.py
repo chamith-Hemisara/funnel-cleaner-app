@@ -5,14 +5,13 @@ import io
 st.set_page_config(page_title="Funnel Cleaner App", layout="wide")
 st.title("📂 Funnel Data Cleaner")
 
-# Upload CSV
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
 
 if uploaded_file:
     df = pd.read_csv(uploaded_file)
     df.columns = df.columns.str.strip()
 
-    # --- Data type conversions ---
+    # --- Type conversions ---
     date_cols = [
         'Inquiry Created Date', 'Site Visit Date Time', 'Latest Quotation Date',
         'Task Created Date', 'Completed Date', 'Claimed Date'
@@ -110,24 +109,28 @@ if uploaded_file:
         )
         df.drop(columns=['Lead Status.1'], inplace=True)
 
-    # === Assign Sales BDO avoiding RSM/BDM ===
+    # === CLEAN COMPARISON FUNCTION ===
+    def clean_user(val):
+        return str(val).strip().lower() if pd.notna(val) else None
+
+    # === Assign Sales BDO ===
     def assign_sales_bdo(group):
+        rsm = clean_user(group['RSM'].iloc[0]) if 'RSM' in group.columns else None
+        bdm = clean_user(group['BDM'].iloc[0]) if 'BDM' in group.columns else None
+
+        user = None
         bdo_tasks = group[
             group['Task Name'].str.startswith('Contact Customer - DS BDO', na=False) & group['User'].notna()
         ]
-        rsm = group['RSM'].iloc[0] if 'RSM' in group.columns else None
-        bdm = group['BDM'].iloc[0] if 'BDM' in group.columns else None
-
-        user = None
         if not bdo_tasks.empty:
             latest_user = bdo_tasks.sort_values('Task Created Date').iloc[-1]['User']
-            if latest_user not in {rsm, bdm}:
+            if clean_user(latest_user) not in {rsm, bdm}:
                 user = latest_user
         else:
             sv = group[group['Task Name'] == 'Site Visit']
             if not sv.empty:
                 candidate = sv.iloc[0]['User']
-                if candidate not in {rsm, bdm}:
+                if clean_user(candidate) not in {rsm, bdm}:
                     user = candidate
 
         if user:
@@ -137,18 +140,21 @@ if uploaded_file:
                         group['Sales BDO'] = group['Sales BDO'].cat.add_categories([user])
                 group['Sales BDO'] = user
         return group
+
     df = df.groupby('REF No', group_keys=False).apply(assign_sales_bdo)
 
-    # --- Cleanup: Remove invalid BDOs who are RSM/BDM ---
+    # === Clean up if Sales BDO is RSM or BDM ===
     def remove_invalid_bdo(row):
-        if row['Sales BDO'] in [row.get('RSM'), row.get('BDM')]:
-            return pd.NA  # or '' if you want it empty
-        return row['Sales BDO']
+        bdo = clean_user(row.get('Sales BDO'))
+        rsm = clean_user(row.get('RSM'))
+        bdm = clean_user(row.get('BDM'))
+        return pd.NA if bdo in {rsm, bdm} else row['Sales BDO']
+
     df['Sales BDO'] = df.apply(remove_invalid_bdo, axis=1)
 
-    # Optional: Validation Column
+    # === Optional: Add validation column ===
     df['BDO Valid?'] = df.apply(
-        lambda r: '❌ RSM/BDM as BDO' if r['Sales BDO'] in [r.get('RSM'), r.get('BDM')] else '✅ OK',
+        lambda r: '❌ RSM/BDM as BDO' if clean_user(r['Sales BDO']) in {clean_user(r.get('RSM')), clean_user(r.get('BDM'))} else '✅ OK',
         axis=1
     )
 
