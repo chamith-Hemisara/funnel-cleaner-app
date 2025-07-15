@@ -3,6 +3,7 @@ import pandas as pd
 import io
 
 st.set_page_config(page_title="Funnel Cleaner App", layout="wide")
+st.title("📂 Funnel Data Cleaner")
 
 # Upload CSV
 uploaded_file = st.file_uploader("Upload your CSV file", type=["csv"])
@@ -34,9 +35,9 @@ if uploaded_file:
         if col in df.columns:
             df[col] = df[col].astype(str).str.lower().map({'yes': True, 'no': False, 'true': True, 'false': False})
 
-    category_cols = ['RSM', 'BDM', 'Inquiry Source Category (Source)', 'Inquiry Category (Source Type)',
+    category_cols = ['Sales BDO', 'RSM', 'BDM', 'Inquiry Source Category (Source)', 'Inquiry Category (Source Type)',
                      'City (CC)', 'District (CC)', 'Province (CC)', 'System Type', 'Phase', 'Type', 'Brand',
-                     'Lead Status', 'User', 'Assignee', 'User Group']  # Removed 'Sales BDO' to prevent category issues
+                     'Lead Status', 'Lead Status.1', 'User', 'Assignee', 'User Group']
     for col in category_cols:
         if col in df.columns:
             df[col] = df[col].astype('category')
@@ -100,16 +101,16 @@ if uploaded_file:
 
     df = df.groupby('REF No', group_keys=False).apply(assign_final_stage)
 
-    # Product column
+    # Product
     def safe_str(val):
         return str(val) if pd.notna(val) else ''
 
     df['Product'] = df.apply(
-        lambda r: f"{safe_str(r.get('Brand'))} - {safe_str(r.get('Phase'))} {safe_str(r.get('Type'))} Inverters - {safe_str(r.get('Latest Quoted Inverter Capacity (kW)'))} kW",
+        lambda r: f"{safe_str(r.get('Brand',''))} - {safe_str(r.get('Phase',''))} {safe_str(r.get('Type',''))} Inverters - {safe_str(r.get('Latest Quoted Inverter Capacity (kW)',''))} kW",
         axis=1
     )
 
-    # Lead Source
+    # Call center or Self
     if 'Lead Status.1' in df.columns:
         df['Call center or Self'] = df['Lead Status.1'].apply(
             lambda x: 'CRM Call Center' if str(x).strip() == 'CRM Call Center' else 'Self Lead'
@@ -131,37 +132,40 @@ if uploaded_file:
                 if candidate not in {rsm, bdm}:
                     user = candidate
         if user:
+            if pd.api.types.is_categorical_dtype(group['Sales BDO']):
+                if user not in group['Sales BDO'].cat.categories:
+                    group['Sales BDO'] = group['Sales BDO'].cat.add_categories([user])
             group['Sales BDO'] = user
         return group
 
-    df['Sales BDO'] = ""  # Initialize column before assigning
     df = df.groupby('REF No', group_keys=False).apply(assign_sales_bdo)
 
-    # Replace Sales BDO with 'RSM Lead' or 'BDM Lead'
-    def correct_sales_bdo(row):
-        bdo = str(row.get('Sales BDO')).strip().lower()
-        rsm = str(row.get('RSM')).strip().lower()
-        bdm = str(row.get('BDM')).strip().lower()
+    # Add RSM Lead or BDM Lead if Sales BDO is missing and User matches
+    def fill_missing_sales_bdo(row):
+        sales_bdo = str(row.get('Sales BDO')).strip()
+        user = str(row.get('User')).strip()
+        rsm = str(row.get('RSM')).strip()
+        bdm = str(row.get('BDM')).strip()
 
-        if bdo == rsm:
-            return 'RSM Lead'
-        elif bdo == bdm:
-            return 'BDM Lead'
+        if not sales_bdo or sales_bdo.lower() in ['nan', 'none', '']:
+            if user == rsm:
+                return 'RSM Lead'
+            elif user == bdm:
+                return 'BDM Lead'
         return row.get('Sales BDO')
 
-    df['Sales BDO'] = df.apply(correct_sales_bdo, axis=1)
+    df['Sales BDO'] = df.apply(fill_missing_sales_bdo, axis=1)
 
     df.reset_index(drop=True, inplace=True)
 
-    # Preview
+    # Preview & Download
     st.subheader("Preview of Cleaned Data (first 10 rows)")
     st.dataframe(df.head(10))
 
-    # Optional Debug View
-    st.subheader("🔍 Records with RSM Lead or BDM Lead in Sales BDO")
-    st.dataframe(df[df['Sales BDO'].isin(['RSM Lead', 'BDM Lead'])][['REF No', 'Sales BDO', 'RSM', 'BDM']])
+    # Optional verification preview
+    st.subheader("🔍 Rows with RSM/BDM Lead as Sales BDO")
+    st.dataframe(df[df['Sales BDO'].isin(['RSM Lead', 'BDM Lead'])][['REF No', 'User', 'RSM', 'BDM', 'Sales BDO']])
 
-    # Download
     towrite = io.BytesIO()
     df.to_excel(towrite, index=False, engine='openpyxl')
     towrite.seek(0)
